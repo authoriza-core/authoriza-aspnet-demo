@@ -1,0 +1,5 @@
+echo ".vs/" >> .gitignore
+echo "bin/" >> .gitignore
+echo "obj/" >> .gitignore
+echo "tokens.json" >> .gitignore
+echo "appsettings.json" >> .gitignore
