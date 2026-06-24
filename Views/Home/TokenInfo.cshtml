@@ -1,6 +1,7 @@
 ﻿@{
     ViewData["Title"] = "Отчет по токенам OIDC";
 }
+@Html.AntiForgeryToken()
 <div class="container mt-4">
     <h2 class="mb-4">Пользователь авторизован</h2>
 
@@ -42,15 +43,13 @@
     <hr />
 
     <h4 class="mt-4">Данные профиля (UserInfo Endpoint)</h4>
-    <form asp-controller="Home" asp-action="TokenInfo" method="get" class="mb-3">
-        <input type="hidden" name="fetchUserInfo" value="true" />
-        <button type="submit" class="btn btn-outline-primary">
-            Запросить UserInfo
-        </button>
-    </form>
-
-    <p><strong>Время получения данных:</strong> @ViewBag.FetchTime</p>
-    <pre class="bg-light p-3 border rounded" style="white-space: pre-wrap; font-size: 0.85em;">@ViewBag.UserInfoJson</pre>
+    <button id="fetch-userinfo-btn" type="button" class="btn btn-outline-primary mb-3">
+        Запросить UserInfo
+    </button>
+    <div id="userinfo-result">
+        <p><strong>Время получения данных:</strong> @ViewBag.FetchTime</p>
+        <pre class="bg-light p-3 border rounded" style="white-space: pre-wrap; font-size: 0.85em;">@ViewBag.UserInfoJson</pre>
+    </div>
 
     <div class="mt-4 mb-5">
         <form id="refresh-form" asp-controller="Home" asp-action="RefreshTokens" method="post" class="d-inline">
@@ -98,4 +97,30 @@
 
     updateCountdown();
     setInterval(updateCountdown, 1000);
+
+    document.getElementById("fetch-userinfo-btn").addEventListener("click", async function () {
+        const btn = this;
+        btn.disabled = true;
+        btn.textContent = "Загрузка...";
+
+        const token = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+
+        const response = await fetch("/Home/FetchUserInfo", {
+            method: "POST",
+            headers: {
+                "RequestVerificationToken": token ?? ""
+            }
+        });
+
+        if (response.ok) {
+            const html = await response.text();
+            document.getElementById("userinfo-result").innerHTML = html;
+        } else {
+            document.getElementById("userinfo-result").innerHTML =
+                `<pre class="bg-light p-3 border rounded text-danger">Ошибка: ${response.status}</pre>`;
+        }
+
+        btn.disabled = false;
+        btn.textContent = "Запросить UserInfo";
+    });
 </script>

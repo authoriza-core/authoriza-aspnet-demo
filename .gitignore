@@ -1,5 +1,9 @@
-echo ".vs/" >> .gitignore
-echo "bin/" >> .gitignore
-echo "obj/" >> .gitignore
-echo "tokens.json" >> .gitignore
-echo "appsettings.json" >> .gitignore
+.vs/
+bin/
+obj/
+tokens.json
+appsettings.Development.json
+*.user
+*.suo
+.vscode/
+.claude/

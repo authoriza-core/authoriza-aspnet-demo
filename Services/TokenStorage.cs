@@ -1,144 +1,74 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 
+// Серверное хранилище Refresh Token-ов.
+// Refresh Token хранится в tokens.json на сервере, а не в куке браузера:
+// кука доступна JavaScript-коду и сети, её размер ограничен, и она передаётся
+// с каждым запросом — хранить долгоживущий Refresh Token в куке небезопасно.
 public class TokenStorage
 {
-    // Имя файла, в котором будут храниться refresh токены. Сам файл будет создан в корне проекта, рядом с Program.cs
-    // привязываем путь к рабочей директории запущенного проекта (корню)
     private readonly string _filePath = Path.Combine(Directory.GetCurrentDirectory(), "tokens.json");
 
-    // Сохраняет или обновляет refresh token пользователя.
+    // Гарантирует, что только один поток выполняет обмен Refresh Token в каждый момент времени.
+    // Без синхронизации параллельные запросы браузера одновременно используют один Refresh Token,
+    // что node-oidc-provider расценивает как атаку воспроизведения (replay attack)
+    // и немедленно отзывает весь грант пользователя.
+    public SemaphoreSlim RefreshLock { get; } = new SemaphoreSlim(1, 1);
+
+    // Сохраняет пару Access Token - Refresh Token при первоначальном входе.
     public void SaveRefreshToken(string accessToken, string refreshToken)
     {
-        // Key   = access token
-        // Value = refresh token
-        Dictionary<string, string> tokens;
-
-        // Проверяем существует ли файл с токенами
-        if (File.Exists(_filePath))
-        {
-            // Читаем весь JSON из файла
-            var json = File.ReadAllText(_filePath);
-            // Преобразуем JSON в словарь
-            tokens = JsonSerializer.Deserialize<Dictionary<string, string>>(json)
-                     ?? [];
-
-            //var result = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-
-            //if (result == null)
-            //{
-            //    tokens = [];
-            //}
-            //else
-            //{
-            //    tokens = result;
-            //}
-
-            // tokens = result ?? new Dictionary<string, string>();
-        }
-        // Если файла нет, создаем пустой словарь
-        else
-        {
-            tokens = [];
-        }
-
-        // Добавляеv запись.
+        var tokens = ReadFromFile();
         tokens[accessToken] = refreshToken;
-
-        // Сериализуем словарь обратно в JSON
-        File.WriteAllText(
-            _filePath,
-            JsonSerializer.Serialize(tokens, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            }));
+        WriteToFile(tokens);
     }
 
-    // Возвращает refresh token пользователя
+    // Возвращает Refresh Token по текущему Access Token.
+    // Результат null означает: Access Token не найден, Refresh Token уже ротирован или удалён после ошибки.
     public string? FindRefreshByAccess(string accessToken)
     {
-        // Если файла нет, значит токены еще не сохранялись
-        if (!File.Exists(_filePath))
-            return null;
-
-        // Читаем JSON
-        var json = File.ReadAllText(_filePath);
-
-        // Преобразуем JSON в словарь
-        var tokens = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-
-        // Если произошла ошибка чтения
-        if (tokens == null)
-            return null;
-
-        // Ищем пользователя в словаре
-        return tokens.TryGetValue(accessToken, out var token)
-            ? token
-            : null;
-        //if (tokens.TryGetValue(accessToken, out var token))
-        //{
-        //    return token;
-        //}
-
-        //return null;
+        var tokens = ReadFromFile();
+        return tokens.TryGetValue(accessToken, out var refreshToken) ? refreshToken : null;
     }
 
-
-    public void UpdateRotatedTokens(string oldAccess, string newAccess, string newRefresh)
+    // Заменяет старую пару Access Token - Refresh Token новой после успешного обновления (Refresh Token rotation).
+    // Серверы OIDC выдают новый Refresh Token при каждом обновлении; старый немедленно инвалидируется.
+    public void UpdateRotatedTokens(string oldAccessToken, string newAccessToken, string newRefreshToken)
     {
-        Dictionary<string, string> tokens;
-
-        // 1. Прочитать файл и получить словарь 
-        if (File.Exists(_filePath))
-        {
-            var json = File.ReadAllText(_filePath);
-            tokens = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
-        }
-        else
-        {
-            tokens = [];
-        }
-
-        // 2. Удалить старую пару
-        tokens.Remove(oldAccess);
-
-        // 3. Записать новую пару
-        tokens[newAccess] = newRefresh;
-
-        // 4. Сохранить словарь обратно в файл
-        File.WriteAllText(
-            _filePath,
-            JsonSerializer.Serialize(tokens, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            }));
+        var tokens = ReadFromFile();
+        tokens.Remove(oldAccessToken);
+        tokens[newAccessToken] = newRefreshToken;
+        WriteToFile(tokens);
     }
 
-
-
-    // Метод для полного удаления токенов при выходе пользователя (Logout)
+    // Удаляет запись при выходе пользователя или при невосстановимой ошибке обновления.
+    // После удаления FindRefreshByAccess вернёт null — параллельные потоки, ожидающие семафора,
+    // увидят пустой результат и не будут повторять заведомо провальный запрос к серверу.
     public void RemoveTokens(string accessToken)
     {
-        // Если токена нет или файла не существует — удалять нечего
-        if (string.IsNullOrEmpty(accessToken) || !File.Exists(_filePath))
+        if (string.IsNullOrEmpty(accessToken))
             return;
 
-        // 1. Читаем текущие токены из файла
-        var json = File.ReadAllText(_filePath);
-        var tokens = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
-
-        // 2. Пытаемся удалить запись по ключу (Access Token)
-        // Метод Remove возвращает true, если ключ был найден и успешно удален
+        var tokens = ReadFromFile();
         if (tokens.Remove(accessToken))
         {
-            // 3. Сохраняем обновленный словарь обратно в файл
-            File.WriteAllText(
-                _filePath,
-                JsonSerializer.Serialize(tokens, new JsonSerializerOptions
-                {
-                    WriteIndented = true
-                }));
-
-            Console.WriteLine("Локальная сессия закрыта. Токены удалены из tokens.json.");
+            WriteToFile(tokens);
+            Console.WriteLine("Сессия завершена: токены удалены из tokens.json.");
         }
+    }
+
+    private Dictionary<string, string> ReadFromFile()
+    {
+        if (!File.Exists(_filePath))
+            return [];
+
+        var json = File.ReadAllText(_filePath);
+        return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
+    }
+
+    private void WriteToFile(Dictionary<string, string> tokens)
+    {
+        File.WriteAllText(
+            _filePath,
+            JsonSerializer.Serialize(tokens, new JsonSerializerOptions { WriteIndented = true }));
     }
 }
