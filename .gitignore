@@ -1,0 +1,10 @@
+.vs/
+bin/
+obj/
+tokens.json
+appsettings.Development.json
+*.user
+*.suo
+.vscode/
+.claude/
+wwwroot/lib/
